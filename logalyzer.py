@@ -5,7 +5,10 @@ Logalyzer – CLI tool for Apache combined log analysis.
 
 import argparse
 import re
+import sys
+from collections import Counter
 from datetime import datetime
+from typing import Generator
 
 
 # Regex for Combined Log Format.
@@ -29,20 +32,17 @@ def parse_line(line: str):
         return None
     ip, ident, user, dt_str, method, path, protocol, status_str, size_str, referer, ua = match.groups()
 
-    # Parse datetime
     try:
         dt_part, tz_part = dt_str.rsplit(' ', 1)
         dt = datetime.strptime(dt_part, '%d/%b/%Y:%H:%M:%S')
     except (ValueError, AttributeError):
         return None
 
-    # Parse status code
     try:
         status = int(status_str)
     except ValueError:
         return None
 
-    # Size can be '-' or integer
     size = None
     if size_str != '-':
         try:
@@ -64,14 +64,53 @@ def parse_line(line: str):
     }
 
 
+def read_logs(file_path: str) -> Generator[dict, None, None]:
+    """Generator that yields parsed log entries line by line."""
+    with open(file_path, 'rt', encoding='utf-8', errors='replace') as f:
+        for line in f:
+            entry = parse_line(line)
+            if entry:
+                yield entry
+
+
+def basic_report(entries):
+    total = 0
+    ip_set = set()
+    endpoint_counter = Counter()
+    errors_4xx_5xx = 0
+
+    for entry in entries:
+        total += 1
+        ip_set.add(entry['ip'])
+        endpoint_counter[entry['path']] += 1
+        if 400 <= entry['status'] <= 599:
+            errors_4xx_5xx += 1
+
+    error_rate = (errors_4xx_5xx / total * 100) if total > 0 else 0.0
+    top10 = endpoint_counter.most_common(10)
+
+    return {
+        'total_requests': total,
+        'unique_ips': len(ip_set),
+        'top_endpoints': top10,
+        'error_rate': round(error_rate, 2)
+    }
+
+
 def main():
     parser = argparse.ArgumentParser(description='Analyze Apache combined access logs.')
     parser.add_argument('file', help='Path to log file (plain or .gz)')
     args = parser.parse_args()
-    # For now just test parsing with a dummy line
-    test_line = '203.0.113.42 - - [01/Jun/2026:09:14:22 +0000] "GET /products/1877 HTTP/1.1" 200 5324 "-" "Mozilla/5.0"'
-    result = parse_line(test_line)
-    print(result)
+
+    entries = read_logs(args.file)
+    report = basic_report(entries)
+
+    print(f"Total requests: {report['total_requests']}")
+    print(f"Unique IPs: {report['unique_ips']}")
+    print(f"Error rate (4xx+5xx): {report['error_rate']}%")
+    print("\nTop 10 endpoints:")
+    for path, count in report['top_endpoints']:
+        print(f"  {count:>6} {path}")
 
 
 if __name__ == '__main__':
