@@ -7,8 +7,8 @@ import argparse
 import re
 import sys
 from collections import Counter, defaultdict
-from datetime import datetime
-from typing import Dict, Generator
+from datetime import datetime, timedelta
+from typing import Dict, Generator, Optional
 
 
 LOG_PATTERN = re.compile(
@@ -24,7 +24,7 @@ LOG_PATTERN = re.compile(
 )
 
 
-def parse_line(line: str):
+def parse_line(line: str) -> Optional[dict]:
     match = LOG_PATTERN.match(line.strip())
     if not match:
         return None
@@ -51,43 +51,6 @@ def parse_line(line: str):
     }
 
 
-def read_logs(file_path: str) -> Generator[dict, None, None]:
-    with open(file_path, 'rt', encoding='utf-8', errors='replace') as f:
-        for line in f:
-            entry = parse_line(line)
-            if entry:
-                yield entry
-
-
-def basic_report(entries):
-    total = 0
-    ip_set = set()
-    endpoint_counter = Counter()
-    errors_4xx_5xx = 0
-    for entry in entries:
-        total += 1
-        ip_set.add(entry['ip'])
-        endpoint_counter[entry['path']] += 1
-        if 400 <= entry['status'] <= 599:
-            errors_4xx_5xx += 1
-    error_rate = (errors_4xx_5xx / total * 100) if total > 0 else 0.0
-    top10 = endpoint_counter.most_common(10)
-    return {
-        'total_requests': total,
-        'unique_ips': len(ip_set),
-        'top_endpoints': top10,
-        'error_rate': round(error_rate, 2)
-    }
-
-
-def hourly_distribution(entries):
-    hourly = defaultdict(int)
-    for entry in entries:
-        hour_key = entry['datetime'].strftime('%Y-%m-%d %H:00')
-        hourly[hour_key] += 1
-    return dict(sorted(hourly.items()))
-
-
 def print_hourly_histogram(hourly: Dict[str, int]):
     if not hourly:
         print("No data for hourly distribution.")
@@ -107,22 +70,72 @@ def print_hourly_histogram(hourly: Dict[str, int]):
 def main():
     parser = argparse.ArgumentParser(description='Analyze Apache combined access logs.')
     parser.add_argument('file', help='Path to log file (plain or .gz)')
+    parser.add_argument('--start', help='Filter entries after this ISO datetime')
+    parser.add_argument('--end', help='Filter entries before this ISO datetime')
     args = parser.parse_args()
 
-    entries = read_logs(args.file)
-    report = basic_report(entries)
+    # Read generator that also yields None for bad lines
+    def read_logs_with_bad(file_path: str):
+        with open(file_path, 'rt', encoding='utf-8', errors='replace') as f:
+            for line in f:
+                entry = parse_line(line)
+                yield entry  # may be None
 
-    print(f"Total requests: {report['total_requests']}")
-    print(f"Unique IPs: {report['unique_ips']}")
-    print(f"Error rate (4xx+5xx): {report['error_rate']}%")
+    entries_stream = read_logs_with_bad(args.file)
+
+    # Apply time filters if needed
+    if args.start or args.end:
+        try:
+            start_dt = datetime.fromisoformat(args.start) if args.start else None
+            end_dt = datetime.fromisoformat(args.end) if args.end else None
+        except ValueError:
+            print("Invalid start/end datetime format. Use ISO format, e.g., 2026-06-01T09:00:00")
+            sys.exit(1)
+
+        def time_filter(gen):
+            for entry in gen:
+                if entry is None:
+                    yield None
+                    continue
+                if args.start and entry['datetime'] < start_dt:
+                    continue
+                if args.end and entry['datetime'] > end_dt:
+                    continue
+                yield entry
+        entries_stream = time_filter(entries_stream)
+
+    # Single pass: gather all statistics
+    total = 0
+    ip_set = set()
+    endpoint_counter = Counter()
+    errors_4xx_5xx = 0
+    hourly = defaultdict(int)
+    bad_lines = 0
+
+    for entry in entries_stream:
+        if entry is None:
+            bad_lines += 1
+            continue
+        total += 1
+        ip_set.add(entry['ip'])
+        endpoint_counter[entry['path']] += 1
+        if 400 <= entry['status'] <= 599:
+            errors_4xx_5xx += 1
+        hour_key = entry['datetime'].strftime('%Y-%m-%d %H:00')
+        hourly[hour_key] += 1
+
+    error_rate = (errors_4xx_5xx / total * 100) if total > 0 else 0.0
+    top10 = endpoint_counter.most_common(10)
+
+    print(f"Total requests: {total}")
+    print(f"Bad lines skipped: {bad_lines}")
+    print(f"Unique IPs: {len(ip_set)}")
+    print(f"Error rate (4xx+5xx): {round(error_rate, 2)}%")
     print("\nTop 10 endpoints:")
-    for path, count in report['top_endpoints']:
+    for path, count in top10:
         print(f"  {count:>6} {path}")
 
-    # Re-read file for hourly distribution (temporary, will be optimized)
-    entries2 = read_logs(args.file)
-    hourly = hourly_distribution(entries2)
-    print_hourly_histogram(hourly)
+    print_hourly_histogram(dict(sorted(hourly.items())))
 
 
 if __name__ == '__main__':
