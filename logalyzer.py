@@ -6,12 +6,11 @@ Logalyzer – CLI tool for Apache combined log analysis.
 import argparse
 import re
 import sys
-from collections import Counter
+from collections import Counter, defaultdict
 from datetime import datetime
-from typing import Generator
+from typing import Dict, Generator
 
 
-# Regex for Combined Log Format.
 LOG_PATTERN = re.compile(
     r'^(\S+) '  # IP
     r'(\S+) '  # ident
@@ -26,46 +25,33 @@ LOG_PATTERN = re.compile(
 
 
 def parse_line(line: str):
-    """Parse a single log line. Returns dict with extracted fields or None if malformed."""
     match = LOG_PATTERN.match(line.strip())
     if not match:
         return None
     ip, ident, user, dt_str, method, path, protocol, status_str, size_str, referer, ua = match.groups()
-
     try:
         dt_part, tz_part = dt_str.rsplit(' ', 1)
         dt = datetime.strptime(dt_part, '%d/%b/%Y:%H:%M:%S')
     except (ValueError, AttributeError):
         return None
-
     try:
         status = int(status_str)
     except ValueError:
         return None
-
     size = None
     if size_str != '-':
         try:
             size = int(size_str)
         except ValueError:
             size = None
-
     return {
-        'ip': ip,
-        'datetime': dt,
-        'timezone': tz_part,
-        'method': method,
-        'path': path,
-        'protocol': protocol,
-        'status': status,
-        'size': size,
-        'referer': referer,
-        'user_agent': ua
+        'ip': ip, 'datetime': dt, 'timezone': tz_part,
+        'method': method, 'path': path, 'protocol': protocol,
+        'status': status, 'size': size, 'referer': referer, 'user_agent': ua
     }
 
 
 def read_logs(file_path: str) -> Generator[dict, None, None]:
-    """Generator that yields parsed log entries line by line."""
     with open(file_path, 'rt', encoding='utf-8', errors='replace') as f:
         for line in f:
             entry = parse_line(line)
@@ -78,23 +64,44 @@ def basic_report(entries):
     ip_set = set()
     endpoint_counter = Counter()
     errors_4xx_5xx = 0
-
     for entry in entries:
         total += 1
         ip_set.add(entry['ip'])
         endpoint_counter[entry['path']] += 1
         if 400 <= entry['status'] <= 599:
             errors_4xx_5xx += 1
-
     error_rate = (errors_4xx_5xx / total * 100) if total > 0 else 0.0
     top10 = endpoint_counter.most_common(10)
-
     return {
         'total_requests': total,
         'unique_ips': len(ip_set),
         'top_endpoints': top10,
         'error_rate': round(error_rate, 2)
     }
+
+
+def hourly_distribution(entries):
+    hourly = defaultdict(int)
+    for entry in entries:
+        hour_key = entry['datetime'].strftime('%Y-%m-%d %H:00')
+        hourly[hour_key] += 1
+    return dict(sorted(hourly.items()))
+
+
+def print_hourly_histogram(hourly: Dict[str, int]):
+    if not hourly:
+        print("No data for hourly distribution.")
+        return
+    max_count = max(hourly.values())
+    scale = 1
+    if max_count > 60:
+        scale = max_count // 60 + 1
+    print("\nHourly request distribution:")
+    print("Hour                Count  Histogram")
+    print("-" * 60)
+    for hour, count in hourly.items():
+        bar = '#' * (count // scale)
+        print(f"{hour}  {count:>6}  {bar}")
 
 
 def main():
@@ -111,6 +118,11 @@ def main():
     print("\nTop 10 endpoints:")
     for path, count in report['top_endpoints']:
         print(f"  {count:>6} {path}")
+
+    # Re-read file for hourly distribution (temporary, will be optimized)
+    entries2 = read_logs(args.file)
+    hourly = hourly_distribution(entries2)
+    print_hourly_histogram(hourly)
 
 
 if __name__ == '__main__':
