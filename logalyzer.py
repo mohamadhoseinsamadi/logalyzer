@@ -277,12 +277,6 @@ def main():
     # Since we already have parse_line returning None, read_logs can yield that None.
     # Let's update: read_logs yields parsed dict or None. We'll count None as bad.
 
-    def read_logs_with_bad(file_path: str):
-        open_func = gzip.open if file_path.endswith('.gz') else open
-        with open_func(file_path, 'rt', encoding='utf-8', errors='replace') as f:
-            for line in f:
-                entry = parse_line(line)
-                yield entry  # may be None
 
     entries_stream = read_logs_with_bad(args.file)
 
@@ -395,7 +389,13 @@ def main():
                 print("  No bursts detected.")
         print_hourly_histogram(report['hourly_distribution'])
 
+def read_logs_with_bad(file_path: str):
+    open_func = gzip.open if file_path.endswith('.gz') else open
+    with open_func(file_path, 'rt', encoding='utf-8', errors='replace') as f:
+        for line in f:
+            entry = parse_line(line)
+            yield entry  # may be None
+
 
 if __name__ == '__main__':
     main()
-    
