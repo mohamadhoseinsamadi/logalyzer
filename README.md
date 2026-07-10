@@ -5,7 +5,23 @@ A command-line tool for analyzing Apache combined access logs. It parses logs li
 ## Requirements
 - Python 3.7+ (uses standard libraries only; no external dependencies)
 
+
+
+## Options
+
+| Option | Description |
+|--------|-------------|
+| `--json` | Output report in JSON format |
+| `--start ISO_DATETIME` | Filter entries after this time (e.g., `2026-06-01T09:00:00`) |
+| `--end ISO_DATETIME` | Filter entries before this time |
+| `--suspicious` | Detect IPs with excessive `401` responses on `/login` (default threshold 50, see `--suspicious-threshold`) |
+| `--suspicious-threshold N` | Set minimum number of `401` attempts to flag (default: 50) |
+| `--error-bursts` | Find 5-minute windows where 5xx error rate exceeds threshold (default 20%) |
+| `--burst-threshold PERCENT` | Set custom error burst threshold (default 20) |
+
+
 ## How to run
+Basic analysis
 
 ```bash
 python logalyzer.py access.log
@@ -16,24 +32,37 @@ For gzipped logs:
 python logalyzer.py access.log.gz
 ```
 
-## Options
-
-| Option | Description |
-|--------|-------------|
-| `--json` | Output report in JSON format |
-| `--start ISO_DATETIME` | Filter entries after this time (e.g., `2026-06-01T09:00:00`) |
-| `--end ISO_DATETIME` | Filter entries before this time |
-| `--suspicious` | Detect IPs with ≥50 `401` responses on `/login/` |
-| `--error-bursts` | Find 5-minute windows where 5xx error rate exceeds threshold (default 20%) |
-| `--burst-threshold PERCENT` | Set custom error burst threshold (default 20) |
-
-Examples:
-```bash
-python logalyzer.py access.log --start "2026-06-01T09:00:00" --end "2026-06-01T10:00:00" --json
-python logalyzer.py access.log --suspicious --error-bursts
+JSON output
+```
+python logalyzer.py access.log --json
+```
+Filter by time range (ISO format)
+```
+python logalyzer.py access.log --start "2026-06-01T04:00:00" --end "2026-06-01T05:00:00"
+```
+Detect suspicious IPs (default threshold: 50)
+```
+python logalyzer.py access.log --suspicious
+```
+Custom threshold for suspicious detection
+```
+python logalyzer.py access.log --suspicious --suspicious-threshold 10
+```
+Find error bursts (5xx rate ≥ 20% in 5‑minute windows)
+```
+python logalyzer.py access.log --error-bursts
+```
+Custom error burst threshold (e.g., 10%)
+```
+python logalyzer.py access.log --error-bursts --burst-threshold 10
+```
+Combine time filtering, suspicious detection, and JSON
+```
+python logalyzer.py access.log --start "2026-06-01T00:00:00" --end "2026-06-01T03:00:00" --suspicious --json
 ```
 
-## Running tests
+
+### Running tests
 ```bash
 python -m pytest test_logalyzer.py   # or python -m unittest test_logalyzer.py
 ```
@@ -44,7 +73,7 @@ python -m pytest test_logalyzer.py   # or python -m unittest test_logalyzer.py
 - **Regex for parsing**: The combined log format is parsed with a regular expression. The datetime is parsed manually using `strptime` after separating the timezone. This approach is robust against minor variations.
 - **Hourly histogram**: An ASCII bar chart is printed directly to the terminal. The bar width is scaled to fit within 60 characters to avoid line wrapping.
 - **Time filtering**: Optional start/end filters are applied before aggregation. If filtering is active, only entries within the range are processed.
-- **Suspicious activity**: Counts `401` status on `/login/` per IP and reports those exceeding a threshold (default 50, but modifiable in code).
+- **Suspicious activity**: Counts `401` responses on `/login` (with or without trailing slash) per IP and flags those exceeding a configurable threshold (default 50). The threshold can be changed via `--suspicious-threshold`.
 - **Error burst detection**: Aggregates per-minute total and 5xx counts, then slides a 5-minute window across the time range, flagging windows where the error rate exceeds the given threshold. This operates after the single pass, using the already collected minute-level data (which is small).
 - **Gzip support**: Detects `.gz` extension and uses `gzip.open` transparently.
 
