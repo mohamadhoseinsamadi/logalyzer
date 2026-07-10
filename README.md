@@ -23,6 +23,8 @@ A command-line tool for analyzing Apache combined access logs. It parses logs li
 | `--brute-force` | Detect brute force attacks (high rate of 401 on /login) |
 | `--brute-window N` | Time window in minutes for brute force detection (default: 1) |
 | `--brute-threshold N` | Min number of 401 attempts in the window to flag (default: 10) |
+| `--attack-scan` | Scan request paths for web attack patterns (SQLi, XSS, Path Traversal, CMDi) |
+| `--attack-threshold N` | Min number of malicious requests from an IP to report (default: 1) |
 
 ## How to run
 Basic analysis
@@ -72,6 +74,11 @@ python logalyzer.py access.log --traffic-anomaly
 Detect brute force attacks (10+ failed logins per minute):
 ```
 python logalyzer.py access.log --brute-force --brute-threshold 5
+```
+
+web attack pattern detection
+```
+python logalyzer.py access.log --attack-scan --attack-threshold 2
 ```
 
 Full security analysis (suspicious, brute force, error bursts, JSON):

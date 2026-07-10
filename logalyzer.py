@@ -35,6 +35,38 @@ LOG_PATTERN = re.compile(
     r'"([^"]*)"$'                      # user-agent
 )
 
+# -------------------------------------------------------------------
+# Web attack signature patterns (compiled regex)
+# -------------------------------------------------------------------
+ATTACK_PATTERNS = {
+    'SQL Injection': re.compile(
+        r"(\bUNION\b\s+\bSELECT\b)|"          # UNION SELECT
+        r"(' OR\s+'1'='1)|"                   # ' OR '1'='1
+        r"(';?\s*--)|"                         # '; --
+        r"(\bSELECT\b.*\bFROM\b)",             # SELECT ... FROM
+        re.IGNORECASE
+    ),
+    'XSS': re.compile(
+        r"(<script[^>]*>)|"                   # <script>
+        r"(javascript:)|"                      # javascript:
+        r"(onerror\s*=)|"                      # onerror=
+        r"(alert\s*\()",                       # alert(
+        re.IGNORECASE
+    ),
+    'Path Traversal': re.compile(
+        r"(\.\./|\.\.%2F|\.\.%5C|\.\.\\)|"    # ../, ..%2F, ..\
+        r"(/etc/passwd|/etc/shadow)|"          # /etc/passwd
+        r"(\\windows\\|\/windows\/)",          # \windows\ or /windows/
+        re.IGNORECASE
+    ),
+    'Command Injection': re.compile(
+        r"(\b(cmd|bash|sh|powershell)\b.*\|)|" # command pipe
+        r"(;\s*(ls|cat|pwd|whoami|id)\b)|"     # ; ls
+        r"(\|\|\s*(ls|cat|pwd|whoami|id)\b)|"  # || ls
+        r"(`[^`]*`)",                           # backtick injection
+        re.IGNORECASE
+    ),
+}
 
 def parse_line(line: str) -> Optional[dict]:
     """Parse a single log line. Returns dict with extracted fields or None if malformed."""
@@ -131,6 +163,10 @@ def main():
                         help='Time window in minutes for brute force detection (default: 1)')
     parser.add_argument('--brute-threshold', type=int, default=10,
                         help='Min number of 401 attempts in the window to flag as brute force (default: 10)')
+    parser.add_argument('--attack-scan', action='store_true',
+                        help='Scan request paths for web attack patterns (SQLi, XSS, etc.)')
+    parser.add_argument('--attack-threshold', type=int, default=1,
+                        help='Min number of malicious requests from an IP to report (default: 1)')
 
     args = parser.parse_args()
 
@@ -172,6 +208,7 @@ def main():
     minute_total = defaultdict(int)
     minute_5xx = defaultdict(int)
     bad_lines = 0
+    ip_attack_counts = defaultdict(lambda: defaultdict(int))  # IP -> {attack_type: count}
 
     # Main single-pass loop
     for entry in entries_stream:
@@ -192,6 +229,13 @@ def main():
         # Suspicious: match /login with or without trailing slash
         if args.suspicious and entry['path'].rstrip('/') == '/login' and entry['status'] == 401:
             ip_401_login[entry['ip']] += 1
+
+        # Web attack scan
+        if args.attack_scan:
+            path = entry['path']
+            for attack_type, pattern in ATTACK_PATTERNS.items():
+                if pattern.search(path):
+                    ip_attack_counts[entry['ip']][attack_type] += 1
 
         if args.brute_force:
             minute_key = entry['datetime'].replace(second=0, microsecond=0)
@@ -279,6 +323,18 @@ def main():
                     'window_end': (max_start + window_delta).strftime('%Y-%m-%d %H:%M')
                 })
 
+    # Web attack detection
+    web_attacks = []
+    if args.attack_scan:
+        for ip, type_counts in ip_attack_counts.items():
+            total_attacks = sum(type_counts.values())
+            if total_attacks >= args.attack_threshold:
+                web_attacks.append({
+                    'ip': ip,
+                    'total': total_attacks,
+                    'details': dict(type_counts)  # e.g., {'SQL Injection': 5, 'XSS': 2}
+                })
+
     # Build report dictionary
     report = {
         'total_requests': total,
@@ -301,6 +357,8 @@ def main():
         report['traffic_anomalies'] = traffic_anomalies
     if args.brute_force:
         report['brute_force_ips'] = brute_force_ips
+    if args.attack_scan:
+        report['web_attacks'] = web_attacks
 
     # Output
     if args.json:
@@ -330,6 +388,14 @@ def main():
                         f"  {bf['ip']}: {bf['max_attempts']} attempts between {bf['window_start']} - {bf['window_end']}")
             else:
                 print("  No brute force attacks detected.")
+        if args.attack_scan:
+            print(f"\nWeb attack patterns detected (threshold >= {args.attack_threshold}):")
+            if web_attacks:
+                for wa in web_attacks:
+                    details = ', '.join(f"{k}: {v}" for k, v in wa['details'].items())
+                    print(f"  {wa['ip']} → {details}")
+            else:
+                print("  No web attacks detected.")
 
         if args.error_bursts:
             print(f"\nError bursts (5xx rate >= {args.burst_threshold}% in 5-min windows):")
