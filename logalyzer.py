@@ -10,7 +10,7 @@ Usage:
     python logalyzer.py access.log --error-bursts --burst-threshold 10
     python logalyzer.py access.log.gz
 """
-
+import os
 import argparse
 import gzip
 import json
@@ -171,10 +171,21 @@ def main():
                         help='Detect automated traffic by User-Agent heuristics')
     parser.add_argument('--bot-threshold', type=float, default=15.0,
                         help='Percentage threshold to flag a User-Agent as bot (default: 30.0)')
+    parser.add_argument('--no-progress', action='store_true',
+                        help='Disable progress indicator during processing')
 
     args = parser.parse_args()
 
     start_time = time.time()
+
+    # --- Progress indicator setup ---
+    total_lines = None
+    if not args.no_progress and not args.file.endswith('.gz'):
+        try:
+            with open(args.file, 'r', encoding='utf-8', errors='replace') as f:
+                total_lines = sum(1 for _ in f)
+        except (OSError, UnicodeDecodeError):
+            total_lines = None
 
     # Single-pass generator (yields None for bad lines)
     entries_stream = read_logs_with_bad(args.file)
@@ -215,9 +226,17 @@ def main():
     ip_attack_counts = defaultdict(lambda: defaultdict(int))  # IP -> {attack_type: count}
     ua_counter = Counter()  # User-Agent -> total count
     ua_ip_counter = defaultdict(lambda: Counter())  # User-Agent -> Counter of IPs
+    processed_lines = 0
 
     # Main single-pass loop
     for entry in entries_stream:
+        processed_lines += 1
+        if not args.no_progress and total_lines and processed_lines % 10000 == 0:
+            percent = processed_lines / total_lines * 100
+            elapsed = time.time() - start_time
+            print(f"\rProgress: {processed_lines}/{total_lines} ({percent:.1f}%) | Elapsed: {elapsed:.1f}s",
+                  end='', file=sys.stderr)
+
         if entry is None:
             bad_lines += 1
             continue
@@ -273,6 +292,9 @@ def main():
                 traffic_anomalies.append({'hour': hour, 'count': count, 'type': 'high'})
             elif count < low_threshold:
                 traffic_anomalies.append({'hour': hour, 'count': count, 'type': 'low'})
+
+    if not args.no_progress and total_lines:
+        print("\r" + " " * 80 + "\r", end='', file=sys.stderr)
 
     # Compute basic statistics
     error_rate = (errors_4xx_5xx / total * 100) if total > 0 else 0.0
