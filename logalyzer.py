@@ -10,6 +10,7 @@ Usage:
     python logalyzer.py access.log --error-bursts --burst-threshold 10
     python logalyzer.py access.log.gz
 """
+
 import os
 import argparse
 import gzip
@@ -17,12 +18,58 @@ import json
 import re
 import sys
 import time
+import math
 from collections import Counter, defaultdict
 from datetime import datetime, timedelta
 from typing import Dict, Generator, List, Optional, Tuple
-import math
 
+
+# -------------------------------------------------------------------
+# ANSI color support for terminal output
+# -------------------------------------------------------------------
+class Colors:
+    """ANSI color codes for terminal output."""
+    RED = '\033[91m'
+    GREEN = '\033[92m'
+    YELLOW = '\033[93m'
+    BLUE = '\033[94m'
+    MAGENTA = '\033[95m'
+    CYAN = '\033[96m'
+    BOLD = '\033[1m'
+    RESET = '\033[0m'
+
+    @staticmethod
+    def colorize(text: str, color: str) -> str:
+        """Apply color if output is a terminal, otherwise return plain text."""
+        if sys.stdout.isatty():
+            return f"{color}{text}{Colors.RESET}"
+        return text
+
+
+# -------------------------------------------------------------------
+# Fancy progress bar
+# -------------------------------------------------------------------
+def print_progress(processed: int, total: int, start_time: float) -> None:
+    """Display a colorful progress bar on stderr."""
+    if total == 0:
+        return
+    percent = processed / total * 100
+    bar_len = 40
+    filled = int(bar_len * processed / total)
+    bar = '█' * filled + '░' * (bar_len - filled)
+    elapsed = time.time() - start_time
+    line = (f"\r{Colors.BOLD}{Colors.CYAN}[Progress] {Colors.RESET}"
+            f"{Colors.YELLOW}|{bar}|{Colors.RESET} "
+            f"{Colors.GREEN}{percent:.1f}%{Colors.RESET} "
+            f"({processed}/{total}) "
+            f"{Colors.MAGENTA}Elapsed: {elapsed:.1f}s{Colors.RESET}")
+    sys.stderr.write(line)
+    sys.stderr.flush()
+
+
+# -------------------------------------------------------------------
 # Combined Log Format regex
+# -------------------------------------------------------------------
 LOG_PATTERN = re.compile(
     r'^(\S+) '                         # IP
     r'(\S+) '                          # ident (usually -)
@@ -40,33 +87,34 @@ LOG_PATTERN = re.compile(
 # -------------------------------------------------------------------
 ATTACK_PATTERNS = {
     'SQL Injection': re.compile(
-        r"(\bUNION\b\s+\bSELECT\b)|"          # UNION SELECT
-        r"(' OR\s+'1'='1)|"                   # ' OR '1'='1
-        r"(';?\s*--)|"                         # '; --
-        r"(\bSELECT\b.*\bFROM\b)",             # SELECT ... FROM
+        r"(\bUNION\b\s+\bSELECT\b)|"
+        r"(' OR\s+'1'='1)|"
+        r"(';?\s*--)|"
+        r"(\bSELECT\b.*\bFROM\b)",
         re.IGNORECASE
     ),
     'XSS': re.compile(
-        r"(<script[^>]*>)|"                   # <script>
-        r"(javascript:)|"                      # javascript:
-        r"(onerror\s*=)|"                      # onerror=
-        r"(alert\s*\()",                       # alert(
+        r"(<script[^>]*>)|"
+        r"(javascript:)|"
+        r"(onerror\s*=)|"
+        r"(alert\s*\()",
         re.IGNORECASE
     ),
     'Path Traversal': re.compile(
-        r"(\.\./|\.\.%2F|\.\.%5C|\.\.\\)|"    # ../, ..%2F, ..\
-        r"(/etc/passwd|/etc/shadow)|"          # /etc/passwd
-        r"(\\windows\\|\/windows\/)",          # \windows\ or /windows/
+        r"(\.\./|\.\.%2F|\.\.%5C|\.\.\\)|"
+        r"(/etc/passwd|/etc/shadow)|"
+        r"(\\windows\\|\/windows\/)",
         re.IGNORECASE
     ),
     'Command Injection': re.compile(
-        r"(\b(cmd|bash|sh|powershell)\b.*\|)|" # command pipe
-        r"(;\s*(ls|cat|pwd|whoami|id)\b)|"     # ; ls
-        r"(\|\|\s*(ls|cat|pwd|whoami|id)\b)|"  # || ls
-        r"(`[^`]*`)",                           # backtick injection
+        r"(\b(cmd|bash|sh|powershell)\b.*\|)|"
+        r"(;\s*(ls|cat|pwd|whoami|id)\b)|"
+        r"(\|\|\s*(ls|cat|pwd|whoami|id)\b)|"
+        r"(`[^`]*`)",
         re.IGNORECASE
     ),
 }
+
 
 def parse_line(line: str) -> Optional[dict]:
     """Parse a single log line. Returns dict with extracted fields or None if malformed."""
@@ -75,20 +123,17 @@ def parse_line(line: str) -> Optional[dict]:
         return None
     ip, ident, user, dt_str, method, path, protocol, status_str, size_str, referer, ua = match.groups()
 
-    # Parse datetime: format 01/Jun/2026:09:14:22 +0000
     try:
         dt_part, tz_part = dt_str.rsplit(' ', 1)
         dt = datetime.strptime(dt_part, '%d/%b/%Y:%H:%M:%S')
     except (ValueError, AttributeError):
         return None
 
-    # Parse status code
     try:
         status = int(status_str)
     except ValueError:
         return None
 
-    # Size can be '-' or integer
     size = None
     if size_str != '-':
         try:
@@ -111,29 +156,23 @@ def parse_line(line: str) -> Optional[dict]:
 
 
 def read_logs_with_bad(file_path: str) -> Generator[Optional[dict], None, None]:
-    """
-    Generator that yields parsed log entries line by line.
-    Yields None for malformed lines so they can be counted.
-    Supports plain text and gzipped files.
-    """
     open_func = gzip.open if file_path.endswith('.gz') else open
     with open_func(file_path, 'rt', encoding='utf-8', errors='replace') as f:
         for line in f:
-            yield parse_line(line)          # may be None
+            yield parse_line(line)
 
 
 def print_hourly_histogram(hourly: Dict[str, int]) -> None:
-    """Print a simple ASCII histogram of hourly request counts."""
     if not hourly:
         print("No data for hourly distribution.")
         return
 
     max_count = max(hourly.values())
     scale = 1
-    if max_count > 60:          # scale bar width to fit terminal
+    if max_count > 60:
         scale = max_count // 60 + 1
 
-    print("\nHourly request distribution:")
+    print(Colors.colorize("\nHourly request distribution:", Colors.CYAN + Colors.BOLD))
     print("Hour                Count  Histogram")
     print("-" * 60)
     for hour, count in hourly.items():
@@ -145,7 +184,7 @@ def main():
     parser = argparse.ArgumentParser(description='Analyze Apache combined access logs.')
     parser.add_argument('file', help='Path to log file (plain or .gz)')
     parser.add_argument('--json', action='store_true', help='Output report in JSON format')
-    parser.add_argument('--start', help='Filter entries after this ISO datetime (e.g., 2026-06-01T09:00:00)')
+    parser.add_argument('--start', help='Filter entries after this ISO datetime')
     parser.add_argument('--end', help='Filter entries before this ISO datetime')
     parser.add_argument('--suspicious', action='store_true', help='Detect suspicious activity (401 on /login)')
     parser.add_argument('--suspicious-threshold', type=int, default=50,
@@ -158,11 +197,11 @@ def main():
     parser.add_argument('--anomaly-std', type=float, default=2.0,
                         help='Number of standard deviations for anomaly threshold (default: 2.0)')
     parser.add_argument('--brute-force', action='store_true',
-                        help='Detect brute force attacks (high rate of 401 on /login in short time windows)')
+                        help='Detect brute force attacks')
     parser.add_argument('--brute-window', type=int, default=1,
                         help='Time window in minutes for brute force detection (default: 1)')
     parser.add_argument('--brute-threshold', type=int, default=10,
-                        help='Min number of 401 attempts in the window to flag as brute force (default: 10)')
+                        help='Min number of 401 attempts in the window to flag (default: 10)')
     parser.add_argument('--attack-scan', action='store_true',
                         help='Scan request paths for web attack patterns (SQLi, XSS, etc.)')
     parser.add_argument('--attack-threshold', type=int, default=1,
@@ -175,7 +214,6 @@ def main():
                         help='Disable progress indicator during processing')
 
     args = parser.parse_args()
-
     start_time = time.time()
 
     # --- Progress indicator setup ---
@@ -187,7 +225,6 @@ def main():
         except (OSError, UnicodeDecodeError):
             total_lines = None
 
-    # Single-pass generator (yields None for bad lines)
     entries_stream = read_logs_with_bad(args.file)
 
     # Apply time filters if needed
@@ -196,7 +233,7 @@ def main():
             start_dt = datetime.fromisoformat(args.start) if args.start else None
             end_dt = datetime.fromisoformat(args.end) if args.end else None
         except ValueError:
-            print("Invalid start/end datetime format. Use ISO format, e.g., 2026-06-01T09:00:00")
+            print("Invalid start/end datetime format.")
             sys.exit(1)
 
         def time_filter(gen):
@@ -223,19 +260,16 @@ def main():
     minute_total = defaultdict(int)
     minute_5xx = defaultdict(int)
     bad_lines = 0
-    ip_attack_counts = defaultdict(lambda: defaultdict(int))  # IP -> {attack_type: count}
-    ua_counter = Counter()  # User-Agent -> total count
-    ua_ip_counter = defaultdict(lambda: Counter())  # User-Agent -> Counter of IPs
+    ip_attack_counts = defaultdict(lambda: defaultdict(int))
+    ua_counter = Counter()
+    ua_ip_counter = defaultdict(lambda: Counter())
     processed_lines = 0
 
     # Main single-pass loop
     for entry in entries_stream:
         processed_lines += 1
         if not args.no_progress and total_lines and processed_lines % 10000 == 0:
-            percent = processed_lines / total_lines * 100
-            elapsed = time.time() - start_time
-            print(f"\rProgress: {processed_lines}/{total_lines} ({percent:.1f}%) | Elapsed: {elapsed:.1f}s",
-                  end='', file=sys.stderr)
+            print_progress(processed_lines, total_lines, start_time)
 
         if entry is None:
             bad_lines += 1
@@ -251,7 +285,6 @@ def main():
         hour_key = entry['datetime'].strftime('%Y-%m-%d %H:00')
         hourly[hour_key] += 1
 
-        # Suspicious: match /login with or without trailing slash
         if args.suspicious and entry['path'].rstrip('/') == '/login' and entry['status'] == 401:
             ip_401_login[entry['ip']] += 1
 
@@ -260,7 +293,6 @@ def main():
             ua_counter[ua] += 1
             ua_ip_counter[ua][entry['ip']] += 1
 
-        # Web attack scan
         if args.attack_scan:
             path = entry['path']
             for attack_type, pattern in ATTACK_PATTERNS.items():
@@ -271,11 +303,15 @@ def main():
             minute_key = entry['datetime'].replace(second=0, microsecond=0)
             ip_401_minute[entry['ip']][minute_key] += 1
 
-        # Error burst data: per-minute counts
         minute = entry['datetime'].replace(second=0, microsecond=0)
         minute_total[minute] += 1
         if 500 <= entry['status'] <= 599:
             minute_5xx[minute] += 1
+
+    if not args.no_progress and total_lines:
+        print_progress(total_lines, total_lines, start_time)
+        sys.stderr.write('\n')
+        sys.stderr.flush()
 
     # --- Traffic anomaly detection ---
     traffic_anomalies = []
@@ -286,21 +322,15 @@ def main():
         std_dev = math.sqrt(variance)
         high_threshold = mean + args.anomaly_std * std_dev
         low_threshold = mean - args.anomaly_std * std_dev
-
         for hour, count in sorted(hourly.items()):
             if count > high_threshold:
                 traffic_anomalies.append({'hour': hour, 'count': count, 'type': 'high'})
             elif count < low_threshold:
                 traffic_anomalies.append({'hour': hour, 'count': count, 'type': 'low'})
 
-    if not args.no_progress and total_lines:
-        print("\r" + " " * 80 + "\r", end='', file=sys.stderr)
-
     # Compute basic statistics
     error_rate = (errors_4xx_5xx / total * 100) if total > 0 else 0.0
     top10 = endpoint_counter.most_common(10)
-
-    # Suspicious IPs (configurable threshold)
     suspicious_ips = [(ip, cnt) for ip, cnt in ip_401_login.items() if cnt >= args.suspicious_threshold]
 
     # Error burst detection (5-minute sliding window)
@@ -309,7 +339,7 @@ def main():
         all_minutes = sorted(minute_total.keys())
         start_t = all_minutes[0]
         end_t = all_minutes[-1] + timedelta(minutes=1)
-        window = 5               # 5-minute window
+        window = 5
         current = start_t
         while current + timedelta(minutes=window) <= end_t:
             window_end = current + timedelta(minutes=window)
@@ -329,12 +359,12 @@ def main():
                     })
             current += timedelta(minutes=1)
 
+    # Brute force detection
     brute_force_ips = []
     if args.brute_force:
         window_delta = timedelta(minutes=args.brute_window)
         for ip, minute_counts in ip_401_minute.items():
             sorted_minutes = sorted(minute_counts.keys())
-            # sliding window
             max_attempts = 0
             max_start = None
             for i, start in enumerate(sorted_minutes):
@@ -365,15 +395,16 @@ def main():
                 web_attacks.append({
                     'ip': ip,
                     'total': total_attacks,
-                    'details': dict(type_counts)  # e.g., {'SQL Injection': 5, 'XSS': 2}
+                    'details': dict(type_counts)
                 })
 
+    # Bot detection
     bot_user_agents = []
     if args.detect_bots and total > 0:
         for ua, count in ua_counter.items():
             percentage = count / total * 100
             if percentage >= args.bot_threshold:
-                top_ips = ua_ip_counter[ua].most_common(3)  # top 3 IPs
+                top_ips = ua_ip_counter[ua].most_common(3)
                 bot_user_agents.append({
                     'user_agent': ua,
                     'count': count,
@@ -395,10 +426,6 @@ def main():
         report['suspicious_threshold'] = args.suspicious_threshold
     if args.error_bursts:
         report['error_bursts'] = bursts
-
-    elapsed = time.time() - start_time
-    report['execution_time_sec'] = round(elapsed, 2)
-
     if args.traffic_anomaly:
         report['traffic_anomalies'] = traffic_anomalies
     if args.brute_force:
@@ -408,73 +435,97 @@ def main():
     if args.detect_bots:
         report['bot_user_agents'] = bot_user_agents
 
+    elapsed = time.time() - start_time
+    report['execution_time_sec'] = round(elapsed, 2)
+
     # Output
     if args.json:
         print(json.dumps(report, indent=2, default=str))
     else:
-        print(f"Total requests: {total}")
-        print(f"Bad lines skipped: {bad_lines}")
-        print(f"Unique IPs: {len(ip_set)}")
-        print(f"Error rate (4xx+5xx): {round(error_rate, 2)}%")
-        print("\nTop 10 endpoints:")
+        # ---- Colored text output ----
+        print(Colors.colorize(f"Total requests: {total}", Colors.CYAN + Colors.BOLD))
+        print(Colors.colorize(f"Bad lines skipped: {bad_lines}", Colors.YELLOW))
+        print(Colors.colorize(f"Unique IPs: {len(ip_set)}", Colors.CYAN))
+
+        error_color = Colors.RED if error_rate > 5 else Colors.GREEN
+        print(Colors.colorize(f"Error rate (4xx+5xx): {round(error_rate, 2)}%", error_color))
+
+        print(Colors.colorize("\nTop 10 endpoints:", Colors.BOLD))
         for path, count in top10:
             print(f"  {count:>6} {path}")
 
         if args.suspicious:
-            print(f"\nSuspicious activity (>={args.suspicious_threshold} x 401 on /login):")
+            print(Colors.colorize(
+                f"\nSuspicious activity (>={args.suspicious_threshold} x 401 on /login):",
+                Colors.YELLOW + Colors.BOLD))
             if suspicious_ips:
                 for ip, cnt in suspicious_ips:
-                    print(f"  {ip}: {cnt} attempts")
+                    print(Colors.colorize(f"  {ip}: {cnt} attempts", Colors.RED))
             else:
-                print("  None detected.")
+                print(Colors.colorize("  None detected.", Colors.GREEN))
+
         if args.brute_force:
-            print(
-                f"\nBrute force attacks (>= {args.brute_threshold} x 401 on /login in {args.brute_window}-min window):")
+            print(Colors.colorize(
+                f"\nBrute force attacks (>= {args.brute_threshold} x 401 on /login in {args.brute_window}-min window):",
+                Colors.RED + Colors.BOLD))
             if brute_force_ips:
                 for bf in brute_force_ips:
-                    print(
-                        f"  {bf['ip']}: {bf['max_attempts']} attempts between {bf['window_start']} - {bf['window_end']}")
+                    print(Colors.colorize(
+                        f"  {bf['ip']}: {bf['max_attempts']} attempts between {bf['window_start']} - {bf['window_end']}",
+                        Colors.RED))
             else:
-                print("  No brute force attacks detected.")
+                print(Colors.colorize("  No brute force attacks detected.", Colors.GREEN))
+
         if args.attack_scan:
-            print(f"\nWeb attack patterns detected (threshold >= {args.attack_threshold}):")
+            print(Colors.colorize(
+                f"\nWeb attack patterns detected (threshold >= {args.attack_threshold}):",
+                Colors.RED + Colors.BOLD))
             if web_attacks:
                 for wa in web_attacks:
                     details = ', '.join(f"{k}: {v}" for k, v in wa['details'].items())
-                    print(f"  {wa['ip']} → {details}")
+                    print(Colors.colorize(f"  {wa['ip']} → {details}", Colors.RED))
             else:
-                print("  No web attacks detected.")
+                print(Colors.colorize("  No web attacks detected.", Colors.GREEN))
 
         if args.error_bursts:
-            print(f"\nError bursts (5xx rate >= {args.burst_threshold}% in 5-min windows):")
+            print(Colors.colorize(
+                f"\nError bursts (5xx rate >= {args.burst_threshold}% in 5-min windows):",
+                Colors.MAGENTA + Colors.BOLD))
             if bursts:
                 for b in bursts:
-                    print(f"  {b['start']} – {b['end']}: {b['error_rate']}%")
+                    line = f"  {b['start']} – {b['end']}: {b['error_rate']}%"
+                    print(Colors.colorize(line, Colors.RED))
             else:
-                print("  No bursts detected.")
+                print(Colors.colorize("  No bursts detected.", Colors.GREEN))
 
         if args.traffic_anomaly:
-            print(f"\nTraffic anomalies (hours beyond {args.anomaly_std} std from mean):")
+            print(Colors.colorize(
+                f"\nTraffic anomalies (hours beyond {args.anomaly_std} std from mean):",
+                Colors.YELLOW))
             if traffic_anomalies:
                 for a in traffic_anomalies:
+                    color = Colors.RED if a['type'] == 'high' else Colors.BLUE
                     direction = "HIGH" if a['type'] == 'high' else "LOW"
-                    print(f"  {a['hour']} : {a['count']:>6}  ({direction})")
+                    print(Colors.colorize(f"  {a['hour']} : {a['count']:>6}  ({direction})", color))
             else:
-                print("  No anomalies detected.")
+                print(Colors.colorize("  No anomalies detected.", Colors.GREEN))
 
         if args.detect_bots:
-            print(f"\nBot detection (User-Agents >= {args.bot_threshold}% of traffic):")
+            print(Colors.colorize(
+                f"\nBot detection (User-Agents >= {args.bot_threshold}% of traffic):",
+                Colors.BLUE + Colors.BOLD))
             if bot_user_agents:
                 for bot in bot_user_agents:
-                    print(f"  {bot['user_agent']}: {bot['percentage']}% ({bot['count']} requests)")
+                    print(Colors.colorize(f"  {bot['user_agent']}: {bot['percentage']}% ({bot['count']} requests)", Colors.CYAN))
                     for ip_info in bot['top_ips']:
-                        print(f"    Top IP: {ip_info['ip']} ({ip_info['count']} requests)")
+                        print(Colors.colorize(f"    Top IP: {ip_info['ip']} ({ip_info['count']} requests)", Colors.MAGENTA))
             else:
-                print("  No bot-like User-Agents detected.")
+                print(Colors.colorize("  No bot-like User-Agents detected.", Colors.GREEN))
 
         print_hourly_histogram(report['hourly_distribution'])
 
-        print(f"\nExecution time: {elapsed:.2f} seconds")
+        exec_color = Colors.YELLOW if elapsed > 5 else Colors.GREEN
+        print(Colors.colorize(f"\nExecution time: {elapsed:.2f} seconds", exec_color))
 
 
 if __name__ == '__main__':

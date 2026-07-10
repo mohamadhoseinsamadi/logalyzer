@@ -27,6 +27,7 @@ A command-line tool for analyzing Apache combined access logs. It parses logs li
 | `--attack-threshold N` | Min number of malicious requests from an IP to report (default: 1)                                         |
 | `--detect-bots` | Detect automated traffic based on User-Agent percentage                                                    |
 | `--bot-threshold PERCENT` | Min percentage of traffic to flag a User-Agent as bot (default: 15)                                        |
+| `--no-progress` | Disable the progress bar during processing |
 
 ## How to run
 Basic analysis
@@ -90,7 +91,7 @@ python logalyzer.py access.log --detect-bots --bot-threshold 20
 
 Full security analysis (suspicious, brute force, error bursts, JSON):
 ```
-python logalyzer.py access.log --suspicious --brute-force --error-bursts --burst-threshold 10 --json
+python logalyzer.py access.log --suspicious --brute-force --attack-scan --detect-bots --error-bursts --traffic-anomaly --json
 ```
 
 ### Running tests
@@ -109,6 +110,8 @@ python -m pytest test_logalyzer.py   # or python -m unittest test_logalyzer.py
 - **Gzip support**: Detects `.gz` extension and uses `gzip.open` transparently.
 - **Traffic anomaly detection**: Uses simple statistical methods (mean and standard deviation) to automatically flag hours with unusually high or low request counts. This helps identify outages or unexpected traffic spikes without manual inspection.
 - **Brute force detection**: Monitors the rate of failed login attempts (401 on /login) per IP within configurable time windows. This goes beyond simple counting and detects actual attack patterns where many attempts are concentrated in a short period.
+- **Colorized terminal output**: Uses ANSI escape codes to highlight important metrics (errors, attacks, anomalies) directly in the terminal, improving readability and quick diagnosis.
+- **Real‑time progress bar**: Displays a visual progress bar with elapsed time during processing, giving users immediate feedback on large files without slowing down the analysis.
 
 ## Problem encountered and solution
 
