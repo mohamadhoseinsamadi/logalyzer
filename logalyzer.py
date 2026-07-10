@@ -217,6 +217,8 @@ def main():
     parser.add_argument('--error-bursts', action='store_true', help='Detect time windows with high 5xx error rate')
     parser.add_argument('--burst-threshold', type=float, default=20.0,
                         help='Error rate percent threshold for bursts (default 20)')
+    parser.add_argument('--suspicious-threshold', type=int, default=50,
+                        help='Min number of 401 attempts on /login/ to flag as suspicious (default: 50)')
     args = parser.parse_args()
 
     # Read generator (filtered if needed)
@@ -308,7 +310,7 @@ def main():
         hour_key = entry['datetime'].strftime('%Y-%m-%d %H:00')
         hourly[hour_key] += 1
         # suspicious
-        if args.suspicious and entry['path'] == '/login/' and entry['status'] == 401:
+        if args.suspicious and entry['path'].rstrip('/') == '/login' and entry['status'] == 401:
             ip_401_login[entry['ip']] += 1
         # burst preparation
         minute = entry['datetime'].replace(second=0, microsecond=0)
@@ -321,8 +323,7 @@ def main():
     top10 = endpoint_counter.most_common(10)
 
     # Compute suspicious list
-    suspicious_ips = [(ip, cnt) for ip, cnt in ip_401_login.items() if cnt >= 50]  # threshold 50
-
+    suspicious_ips = [(ip, cnt) for ip, cnt in ip_401_login.items() if cnt >= args.suspicious_threshold]
     # Compute error bursts if requested
     bursts = []
     if args.error_bursts and minute_total:
@@ -360,9 +361,9 @@ def main():
     }
     if args.suspicious:
         report['suspicious_ips'] = suspicious_ips
+        report['suspicious_threshold'] = args.suspicious_threshold
     if args.error_bursts:
         report['error_bursts'] = bursts
-
     if args.json:
         print(json.dumps(report, indent=2, default=str))
     else:
@@ -374,7 +375,7 @@ def main():
         for path, count in top10:
             print(f"  {count:>6} {path}")
         if args.suspicious:
-            print("\nSuspicious activity (>=50 x 401 on /login/):")
+            print(f"\nSuspicious activity (>={args.suspicious_threshold} x 401 on /login):")
             if suspicious_ips:
                 for ip, cnt in suspicious_ips:
                     print(f"  {ip}: {cnt} attempts")
