@@ -1,21 +1,52 @@
 # Logalyzer
 
-A command-line tool for analyzing Apache combined access logs.
+A command-line tool for analyzing Apache combined access logs. It parses logs line-by-line with minimal memory footprint and provides basic statistics, hourly distribution, and optional advanced features like suspicious activity detection, error burst detection, and JSON output.
 
-## Usage
-python logalyzer.py <logfile> [options]
+## Requirements
+- Python 3.7+ (uses standard libraries only; no external dependencies)
+
+## How to run
+
+```bash
+python logalyzer.py access.log
+```
+
+For gzipped logs:
+```bash
+python logalyzer.py access.log.gz
+```
+
+## Options
+
+| Option | Description |
+|--------|-------------|
+| `--json` | Output report in JSON format |
+| `--start ISO_DATETIME` | Filter entries after this time (e.g., `2026-06-01T09:00:00`) |
+| `--end ISO_DATETIME` | Filter entries before this time |
+| `--suspicious` | Detect IPs with ≥50 `401` responses on `/login/` |
+| `--error-bursts` | Find 5-minute windows where 5xx error rate exceeds threshold (default 20%) |
+| `--burst-threshold PERCENT` | Set custom error burst threshold (default 20) |
 
 Examples:
-python logalyzer.py access.log
-python logalyzer.py access.log --json
-python logalyzer.py access.log --start "2026-06-01T09:00:00" --end "2026-06-01T10:00:00"
-python logalyzer.py access.log --suspicious
-python logalyzer.py access.log.gz
+```bash
+python logalyzer.py access.log --start "2026-06-01T09:00:00" --end "2026-06-01T10:00:00" --json
+python logalyzer.py access.log --suspicious --error-bursts
+```
 
-## Design Decisions
-- **Single-pass processing:** All statistics are gathered in one loop to avoid reading the file multiple times, ensuring line-by-line processing and low memory usage.
-- **Regex parsing:** A carefully crafted regular expression extracts all fields from the combined log format. Malformed lines are gracefully skipped and counted.
-- **Optional features:** Suspicious IP detection and error burst detection are implemented as optional flags, keeping the default output focused.
+## Running tests
+```bash
+python -m pytest test_logalyzer.py   # or python -m unittest test_logalyzer.py
+```
 
-## Problem Encountered
-Initially, I implemented separate functions for each report (basic report, hourly distribution). However, each function consumed the generator independently, causing the file to be read multiple times. This violated the requirement of line-by-line processing and was inefficient for large files. The solution was to merge all metric collection into a single `for` loop, using a single pass over the file. This required careful state management but significantly improved performance and memory usage.
+## Key decisions
+
+- **Single-pass processing**: The script reads the log once and computes all required statistics simultaneously. This avoids multiple file scans and keeps memory usage low because only counters and sets (unique IPs, endpoint counts) are stored, not the entire log lines. Bad lines are counted and ignored without crashing.
+- **Regex for parsing**: The combined log format is parsed with a regular expression. The datetime is parsed manually using `strptime` after separating the timezone. This approach is robust against minor variations.
+- **Hourly histogram**: An ASCII bar chart is printed directly to the terminal. The bar width is scaled to fit within 60 characters to avoid line wrapping.
+- **Time filtering**: Optional start/end filters are applied before aggregation. If filtering is active, only entries within the range are processed.
+- **Suspicious activity**: Counts `401` status on `/login/` per IP and reports those exceeding a threshold (default 50, but modifiable in code).
+- **Error burst detection**: Aggregates per-minute total and 5xx counts, then slides a 5-minute window across the time range, flagging windows where the error rate exceeds the given threshold. This operates after the single pass, using the already collected minute-level data (which is small).
+- **Gzip support**: Detects `.gz` extension and uses `gzip.open` transparently.
+
+## Problem encountered and solution
+
