@@ -20,6 +20,9 @@ A command-line tool for analyzing Apache combined access logs. It parses logs li
 | `--burst-threshold PERCENT` | Set custom error burst threshold (default 20) |
 | `--traffic-anomaly` | Detect hours with unusually high or low request counts |
 | `--anomaly-std N` | Number of standard deviations for anomaly sensitivity (default: 2.0) |
+| `--brute-force` | Detect brute force attacks (high rate of 401 on /login) |
+| `--brute-window N` | Time window in minutes for brute force detection (default: 1) |
+| `--brute-threshold N` | Min number of 401 attempts in the window to flag (default: 10) |
 
 ## How to run
 Basic analysis
@@ -61,7 +64,20 @@ Combine time filtering, suspicious detection, and JSON
 ```
 python logalyzer.py access.log --start "2026-06-01T00:00:00" --end "2026-06-01T03:00:00" --suspicious --json
 ```
+Detect traffic anomalies (hours with unusual request counts):
+```
+python logalyzer.py access.log --traffic-anomaly
+```
 
+Detect brute force attacks (10+ failed logins per minute):
+```
+python logalyzer.py access.log --brute-force --brute-threshold 5
+```
+
+Full security analysis (suspicious, brute force, error bursts, JSON):
+```
+python logalyzer.py access.log --suspicious --brute-force --error-bursts --burst-threshold 10 --json
+```
 
 ### Running tests
 ```bash
@@ -77,6 +93,8 @@ python -m pytest test_logalyzer.py   # or python -m unittest test_logalyzer.py
 - **Suspicious activity**: Counts `401` responses on `/login` (with or without trailing slash) per IP and flags those exceeding a configurable threshold (default 50). The threshold can be changed via `--suspicious-threshold`.
 - **Error burst detection**: Aggregates per-minute total and 5xx counts, then slides a 5-minute window across the time range, flagging windows where the error rate exceeds the given threshold. This operates after the single pass, using the already collected minute-level data (which is small).
 - **Gzip support**: Detects `.gz` extension and uses `gzip.open` transparently.
+- **Traffic anomaly detection**: Uses simple statistical methods (mean and standard deviation) to automatically flag hours with unusually high or low request counts. This helps identify outages or unexpected traffic spikes without manual inspection.
+- **Brute force detection**: Monitors the rate of failed login attempts (401 on /login) per IP within configurable time windows. This goes beyond simple counting and detects actual attack patterns where many attempts are concentrated in a short period.
 
 ## Problem encountered and solution
 

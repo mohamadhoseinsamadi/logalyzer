@@ -125,6 +125,12 @@ def main():
                         help='Detect hours with unusually high or low traffic')
     parser.add_argument('--anomaly-std', type=float, default=2.0,
                         help='Number of standard deviations for anomaly threshold (default: 2.0)')
+    parser.add_argument('--brute-force', action='store_true',
+                        help='Detect brute force attacks (high rate of 401 on /login in short time windows)')
+    parser.add_argument('--brute-window', type=int, default=1,
+                        help='Time window in minutes for brute force detection (default: 1)')
+    parser.add_argument('--brute-threshold', type=int, default=10,
+                        help='Min number of 401 attempts in the window to flag as brute force (default: 10)')
 
     args = parser.parse_args()
 
@@ -162,6 +168,7 @@ def main():
     errors_4xx_5xx = 0
     hourly = defaultdict(int)
     ip_401_login = Counter()
+    ip_401_minute = defaultdict(lambda: defaultdict(int))
     minute_total = defaultdict(int)
     minute_5xx = defaultdict(int)
     bad_lines = 0
@@ -185,6 +192,10 @@ def main():
         # Suspicious: match /login with or without trailing slash
         if args.suspicious and entry['path'].rstrip('/') == '/login' and entry['status'] == 401:
             ip_401_login[entry['ip']] += 1
+
+        if args.brute_force:
+            minute_key = entry['datetime'].replace(second=0, microsecond=0)
+            ip_401_minute[entry['ip']][minute_key] += 1
 
         # Error burst data: per-minute counts
         minute = entry['datetime'].replace(second=0, microsecond=0)
@@ -241,6 +252,33 @@ def main():
                     })
             current += timedelta(minutes=1)
 
+    brute_force_ips = []
+    if args.brute_force:
+        window_delta = timedelta(minutes=args.brute_window)
+        for ip, minute_counts in ip_401_minute.items():
+            sorted_minutes = sorted(minute_counts.keys())
+            # sliding window
+            max_attempts = 0
+            max_start = None
+            for i, start in enumerate(sorted_minutes):
+                end = start + window_delta
+                attempts = 0
+                for t in sorted_minutes[i:]:
+                    if t < end:
+                        attempts += minute_counts[t]
+                    else:
+                        break
+                if attempts > max_attempts:
+                    max_attempts = attempts
+                    max_start = start
+            if max_attempts >= args.brute_threshold:
+                brute_force_ips.append({
+                    'ip': ip,
+                    'max_attempts': max_attempts,
+                    'window_start': max_start.strftime('%Y-%m-%d %H:%M'),
+                    'window_end': (max_start + window_delta).strftime('%Y-%m-%d %H:%M')
+                })
+
     # Build report dictionary
     report = {
         'total_requests': total,
@@ -261,6 +299,8 @@ def main():
 
     if args.traffic_anomaly:
         report['traffic_anomalies'] = traffic_anomalies
+    if args.brute_force:
+        report['brute_force_ips'] = brute_force_ips
 
     # Output
     if args.json:
@@ -281,6 +321,15 @@ def main():
                     print(f"  {ip}: {cnt} attempts")
             else:
                 print("  None detected.")
+        if args.brute_force:
+            print(
+                f"\nBrute force attacks (>= {args.brute_threshold} x 401 on /login in {args.brute_window}-min window):")
+            if brute_force_ips:
+                for bf in brute_force_ips:
+                    print(
+                        f"  {bf['ip']}: {bf['max_attempts']} attempts between {bf['window_start']} - {bf['window_end']}")
+            else:
+                print("  No brute force attacks detected.")
 
         if args.error_bursts:
             print(f"\nError bursts (5xx rate >= {args.burst_threshold}% in 5-min windows):")
