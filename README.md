@@ -50,3 +50,8 @@ python -m pytest test_logalyzer.py   # or python -m unittest test_logalyzer.py
 
 ## Problem encountered and solution
 
+**Problem:**  
+When testing the `--suspicious` flag with the sample log file, the tool unexpectedly reported “None detected,” even though the log clearly contained repeated 401 responses on `/login` from the same IP. After investigation, I found that some requests used `/login` while the detection logic expected an exact match with `/login/` (with trailing slash). This mismatch caused the feature to silently fail.
+
+**Solution:**  
+Instead of hardcoding the path with a trailing slash or adding multiple conditionals, I normalized the path by removing any trailing slashes before comparison (`path.rstrip('/') == '/login'`). This single change made the detection robust against inconsistencies in log formatting, while keeping the code clean and readable. The fix was verified by running the tool with a low threshold, immediately revealing the suspicious IP with thousands of attempts.
