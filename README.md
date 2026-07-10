@@ -18,7 +18,8 @@ A command-line tool for analyzing Apache combined access logs. It parses logs li
 | `--suspicious-threshold N` | Set minimum number of `401` attempts to flag (default: 50) |
 | `--error-bursts` | Find 5-minute windows where 5xx error rate exceeds threshold (default 20%) |
 | `--burst-threshold PERCENT` | Set custom error burst threshold (default 20) |
-
+| `--traffic-anomaly` | Detect hours with unusually high or low request counts |
+| `--anomaly-std N` | Number of standard deviations for anomaly sensitivity (default: 2.0) |
 
 ## How to run
 Basic analysis

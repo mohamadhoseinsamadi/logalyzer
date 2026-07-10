@@ -20,6 +20,7 @@ import time
 from collections import Counter, defaultdict
 from datetime import datetime, timedelta
 from typing import Dict, Generator, List, Optional, Tuple
+import math
 
 # Combined Log Format regex
 LOG_PATTERN = re.compile(
@@ -120,6 +121,11 @@ def main():
     parser.add_argument('--error-bursts', action='store_true', help='Detect time windows with high 5xx error rate')
     parser.add_argument('--burst-threshold', type=float, default=20.0,
                         help='Error rate percent threshold for bursts (default 20)')
+    parser.add_argument('--traffic-anomaly', action='store_true',
+                        help='Detect hours with unusually high or low traffic')
+    parser.add_argument('--anomaly-std', type=float, default=2.0,
+                        help='Number of standard deviations for anomaly threshold (default: 2.0)')
+
     args = parser.parse_args()
 
     start_time = time.time()
@@ -186,6 +192,22 @@ def main():
         if 500 <= entry['status'] <= 599:
             minute_5xx[minute] += 1
 
+    # --- Traffic anomaly detection ---
+    traffic_anomalies = []
+    if args.traffic_anomaly and hourly:
+        counts = list(hourly.values())
+        mean = sum(counts) / len(counts)
+        variance = sum((x - mean) ** 2 for x in counts) / len(counts)
+        std_dev = math.sqrt(variance)
+        high_threshold = mean + args.anomaly_std * std_dev
+        low_threshold = mean - args.anomaly_std * std_dev
+
+        for hour, count in sorted(hourly.items()):
+            if count > high_threshold:
+                traffic_anomalies.append({'hour': hour, 'count': count, 'type': 'high'})
+            elif count < low_threshold:
+                traffic_anomalies.append({'hour': hour, 'count': count, 'type': 'low'})
+
     # Compute basic statistics
     error_rate = (errors_4xx_5xx / total * 100) if total > 0 else 0.0
     top10 = endpoint_counter.most_common(10)
@@ -237,6 +259,9 @@ def main():
     elapsed = time.time() - start_time
     report['execution_time_sec'] = round(elapsed, 2)
 
+    if args.traffic_anomaly:
+        report['traffic_anomalies'] = traffic_anomalies
+
     # Output
     if args.json:
         print(json.dumps(report, indent=2, default=str))
@@ -264,6 +289,15 @@ def main():
                     print(f"  {b['start']} – {b['end']}: {b['error_rate']}%")
             else:
                 print("  No bursts detected.")
+
+        if args.traffic_anomaly:
+            print(f"\nTraffic anomalies (hours beyond {args.anomaly_std} std from mean):")
+            if traffic_anomalies:
+                for a in traffic_anomalies:
+                    direction = "HIGH" if a['type'] == 'high' else "LOW"
+                    print(f"  {a['hour']} : {a['count']:>6}  ({direction})")
+            else:
+                print("  No anomalies detected.")
 
         print_hourly_histogram(report['hourly_distribution'])
 
