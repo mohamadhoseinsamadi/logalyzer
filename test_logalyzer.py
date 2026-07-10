@@ -1,6 +1,8 @@
 import tempfile
+import os
 import unittest
-from logalyzer import parse_line, basic_report, hourly_distribution
+from logalyzer import parse_line, read_logs_with_bad
+
 
 class TestParser(unittest.TestCase):
     def test_valid_line(self):
@@ -22,6 +24,7 @@ class TestParser(unittest.TestCase):
         self.assertIsNotNone(entry)
         self.assertIsNone(entry['size'])
 
+
 class TestReport(unittest.TestCase):
     def setUp(self):
         # Create a temporary log file
@@ -33,32 +36,47 @@ class TestReport(unittest.TestCase):
         self.tmp.close()
 
     def tearDown(self):
-        import os
         os.unlink(self.tmp.name)
 
+    def _get_stats(self):
+        """Helper to run a single pass over the temp file and return basic stats."""
+        total = 0
+        ip_set = set()
+        endpoints = {}
+        errors = 0
+        hourly = {}
+        bad = 0
+        for entry in read_logs_with_bad(self.tmp.name):
+            if entry is None:
+                bad += 1
+                continue
+            total += 1
+            ip_set.add(entry['ip'])
+            path = entry['path']
+            endpoints[path] = endpoints.get(path, 0) + 1
+            if 400 <= entry['status'] <= 599:
+                errors += 1
+            hour = entry['datetime'].strftime('%Y-%m-%d %H:00')
+            hourly[hour] = hourly.get(hour, 0) + 1
+        error_rate = (errors / total * 100) if total > 0 else 0.0
+        return total, len(ip_set), error_rate, hourly
+
     def test_total_requests(self):
-        from logalyzer import read_logs_with_bad
-        entries = (e for e in read_logs_with_bad(self.tmp.name) if e is not None)
-        stats = basic_report(entries)
-        self.assertEqual(stats['total_requests'], 3)
+        total, _, _, _ = self._get_stats()
+        self.assertEqual(total, 3)
 
     def test_unique_ips(self):
-        from logalyzer import read_logs_with_bad
-        entries = (e for e in read_logs_with_bad(self.tmp.name) if e is not None)
-        stats = basic_report(entries)
-        self.assertEqual(stats['unique_ips'], 2)
+        _, unique_ips, _, _ = self._get_stats()
+        self.assertEqual(unique_ips, 2)
 
     def test_error_rate(self):
-        from logalyzer import read_logs_with_bad
-        entries = (e for e in read_logs_with_bad(self.tmp.name) if e is not None)
-        stats = basic_report(entries)
-        self.assertAlmostEqual(stats['error_rate'], 33.33, places=2)
+        _, _, error_rate, _ = self._get_stats()
+        self.assertAlmostEqual(error_rate, 33.33, places=2)
 
     def test_hourly_distribution(self):
-        from logalyzer import read_logs_with_bad
-        entries = (e for e in read_logs_with_bad(self.tmp.name) if e is not None)
-        dist = hourly_distribution(entries)
-        self.assertEqual(dist['2026-06-01 09:00'], 3)
+        _, _, _, hourly = self._get_stats()
+        self.assertEqual(hourly['2026-06-01 09:00'], 3)
+
 
 if __name__ == '__main__':
     unittest.main()
