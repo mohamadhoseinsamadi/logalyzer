@@ -167,6 +167,10 @@ def main():
                         help='Scan request paths for web attack patterns (SQLi, XSS, etc.)')
     parser.add_argument('--attack-threshold', type=int, default=1,
                         help='Min number of malicious requests from an IP to report (default: 1)')
+    parser.add_argument('--detect-bots', action='store_true',
+                        help='Detect automated traffic by User-Agent heuristics')
+    parser.add_argument('--bot-threshold', type=float, default=15.0,
+                        help='Percentage threshold to flag a User-Agent as bot (default: 30.0)')
 
     args = parser.parse_args()
 
@@ -209,6 +213,8 @@ def main():
     minute_5xx = defaultdict(int)
     bad_lines = 0
     ip_attack_counts = defaultdict(lambda: defaultdict(int))  # IP -> {attack_type: count}
+    ua_counter = Counter()  # User-Agent -> total count
+    ua_ip_counter = defaultdict(lambda: Counter())  # User-Agent -> Counter of IPs
 
     # Main single-pass loop
     for entry in entries_stream:
@@ -229,6 +235,11 @@ def main():
         # Suspicious: match /login with or without trailing slash
         if args.suspicious and entry['path'].rstrip('/') == '/login' and entry['status'] == 401:
             ip_401_login[entry['ip']] += 1
+
+        if args.detect_bots:
+            ua = entry['user_agent']
+            ua_counter[ua] += 1
+            ua_ip_counter[ua][entry['ip']] += 1
 
         # Web attack scan
         if args.attack_scan:
@@ -335,6 +346,19 @@ def main():
                     'details': dict(type_counts)  # e.g., {'SQL Injection': 5, 'XSS': 2}
                 })
 
+    bot_user_agents = []
+    if args.detect_bots and total > 0:
+        for ua, count in ua_counter.items():
+            percentage = count / total * 100
+            if percentage >= args.bot_threshold:
+                top_ips = ua_ip_counter[ua].most_common(3)  # top 3 IPs
+                bot_user_agents.append({
+                    'user_agent': ua,
+                    'count': count,
+                    'percentage': round(percentage, 2),
+                    'top_ips': [{'ip': ip, 'count': cnt} for ip, cnt in top_ips]
+                })
+
     # Build report dictionary
     report = {
         'total_requests': total,
@@ -359,6 +383,8 @@ def main():
         report['brute_force_ips'] = brute_force_ips
     if args.attack_scan:
         report['web_attacks'] = web_attacks
+    if args.detect_bots:
+        report['bot_user_agents'] = bot_user_agents
 
     # Output
     if args.json:
@@ -413,6 +439,16 @@ def main():
                     print(f"  {a['hour']} : {a['count']:>6}  ({direction})")
             else:
                 print("  No anomalies detected.")
+
+        if args.detect_bots:
+            print(f"\nBot detection (User-Agents >= {args.bot_threshold}% of traffic):")
+            if bot_user_agents:
+                for bot in bot_user_agents:
+                    print(f"  {bot['user_agent']}: {bot['percentage']}% ({bot['count']} requests)")
+                    for ip_info in bot['top_ips']:
+                        print(f"    Top IP: {ip_info['ip']} ({ip_info['count']} requests)")
+            else:
+                print("  No bot-like User-Agents detected.")
 
         print_hourly_histogram(report['hourly_distribution'])
 

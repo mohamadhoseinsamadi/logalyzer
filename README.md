@@ -9,22 +9,24 @@ A command-line tool for analyzing Apache combined access logs. It parses logs li
 
 ## Options
 
-| Option | Description |
-|--------|-------------|
-| `--json` | Output report in JSON format |
-| `--start ISO_DATETIME` | Filter entries after this time (e.g., `2026-06-01T09:00:00`) |
-| `--end ISO_DATETIME` | Filter entries before this time |
+| Option | Description                                                                                                |
+|--------|------------------------------------------------------------------------------------------------------------|
+| `--json` | Output report in JSON format                                                                               |
+| `--start ISO_DATETIME` | Filter entries after this time (e.g., `2026-06-01T09:00:00`)                                               |
+| `--end ISO_DATETIME` | Filter entries before this time                                                                            |
 | `--suspicious` | Detect IPs with excessive `401` responses on `/login` (default threshold 50, see `--suspicious-threshold`) |
-| `--suspicious-threshold N` | Set minimum number of `401` attempts to flag (default: 50) |
-| `--error-bursts` | Find 5-minute windows where 5xx error rate exceeds threshold (default 20%) |
-| `--burst-threshold PERCENT` | Set custom error burst threshold (default 20) |
-| `--traffic-anomaly` | Detect hours with unusually high or low request counts |
-| `--anomaly-std N` | Number of standard deviations for anomaly sensitivity (default: 2.0) |
-| `--brute-force` | Detect brute force attacks (high rate of 401 on /login) |
-| `--brute-window N` | Time window in minutes for brute force detection (default: 1) |
-| `--brute-threshold N` | Min number of 401 attempts in the window to flag (default: 10) |
-| `--attack-scan` | Scan request paths for web attack patterns (SQLi, XSS, Path Traversal, CMDi) |
-| `--attack-threshold N` | Min number of malicious requests from an IP to report (default: 1) |
+| `--suspicious-threshold N` | Set minimum number of `401` attempts to flag (default: 50)                                                 |
+| `--error-bursts` | Find 5-minute windows where 5xx error rate exceeds threshold (default 20%)                                 |
+| `--burst-threshold PERCENT` | Set custom error burst threshold (default 20)                                                              |
+| `--traffic-anomaly` | Detect hours with unusually high or low request counts                                                     |
+| `--anomaly-std N` | Number of standard deviations for anomaly sensitivity (default: 2.0)                                       |
+| `--brute-force` | Detect brute force attacks (high rate of 401 on /login)                                                    |
+| `--brute-window N` | Time window in minutes for brute force detection (default: 1)                                              |
+| `--brute-threshold N` | Min number of 401 attempts in the window to flag (default: 10)                                             |
+| `--attack-scan` | Scan request paths for web attack patterns (SQLi, XSS, Path Traversal, CMDi)                               |
+| `--attack-threshold N` | Min number of malicious requests from an IP to report (default: 1)                                         |
+| `--detect-bots` | Detect automated traffic based on User-Agent percentage                                                    |
+| `--bot-threshold PERCENT` | Min percentage of traffic to flag a User-Agent as bot (default: 15)                                        |
 
 ## How to run
 Basic analysis
@@ -79,6 +81,11 @@ python logalyzer.py access.log --brute-force --brute-threshold 5
 web attack pattern detection
 ```
 python logalyzer.py access.log --attack-scan --attack-threshold 2
+```
+
+bot detection via User-Agent heuristics
+```
+python logalyzer.py access.log --detect-bots --bot-threshold 20
 ```
 
 Full security analysis (suspicious, brute force, error bursts, JSON):
